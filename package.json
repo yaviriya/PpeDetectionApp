@@ -10,10 +10,19 @@
     "test": "jest"
   },
   "dependencies": {
+    "@react-native/new-app-screen": "0.85.1",
+    "buffer": "^6.0.3",
+    "jpeg-js": "^0.4.4",
+    "onnxruntime-react-native": "^1.24.3",
     "react": "19.2.3",
     "react-native": "0.85.1",
-    "@react-native/new-app-screen": "0.85.1",
-    "react-native-safe-area-context": "^5.5.2"
+    "react-native-fs": "^2.20.0",
+    "react-native-image-resizer": "^1.4.5",
+    "react-native-nitro-image": "^0.13.1",
+    "react-native-nitro-modules": "^0.35.4",
+    "react-native-safe-area-context": "^5.5.2",
+    "react-native-vision-camera": "^5.0.1",
+    "react-native-worklets-core": "^1.6.3"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
