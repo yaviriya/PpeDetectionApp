@@ -57,6 +57,7 @@ PpeDetectionApp/
 - [x] ทดสอบบน emulator ได้ผลแล้ว — ตรวจจับได้และแสดง bounding box พร้อม label และ confidence ทศนิยม 2 ตำแหน่ง
 - [x] ทดสอบบนเครื่อง Android จริง (Samsung Galaxy S26, Android 15) — แอปรันได้สำเร็จ
 - [x] แก้ปัญหา detection ผิดพลาด — เพิ่ม NMS + ปรับ confidence threshold 0.25 → 0.45
+- [x] ทดสอบบน Samsung Galaxy S23 Ultra (Android 16) — แอปรันได้สำเร็จ, กล้อง + bounding box ทำงานปกติ (เครื่องเทสต์เฉพาะของโปรเจค)
 
 ## สิ่งที่ยังต้องทำ
 

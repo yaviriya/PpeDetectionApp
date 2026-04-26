@@ -6,6 +6,7 @@ import {
   Platform,
   PermissionsAndroid,
   Dimensions,
+  TouchableOpacity,
 } from 'react-native';
 import { Camera, CameraRef, useCameraDevice } from 'react-native-vision-camera';
 import { InferenceSession, Tensor } from 'onnxruntime-react-native';
@@ -101,7 +102,10 @@ export default function App() {
   const [detections, setDetections] = useState<Detection[]>([]);
   const [session, setSession] = useState<InferenceSession | null>(null);
   const [statusText, setStatusText] = useState('กำลังโหลดโมเดล...');
-  const device = useCameraDevice('back');
+  const [cameraPosition, setCameraPosition] = useState<'front' | 'back'>('back');
+  const [inferenceMs, setInferenceMs] = useState(0);
+  const [isRunning, setIsRunning] = useState(false);
+  const device = useCameraDevice(cameraPosition);
   const camera = useRef<CameraRef>(null);
   const isDetecting = useRef(false);
 
@@ -113,11 +117,15 @@ export default function App() {
   useEffect(() => {
     if (!session) return;
     setStatusText('');
+  }, [session]);
+
+  useEffect(() => {
+    if (!session || !isRunning) return;
     const interval = setInterval(() => {
       runDetection();
-    }, 800);
+    }, 200);
     return () => clearInterval(interval);
-  }, [session]);
+  }, [session, isRunning]);
 
   const requestPermissions = async () => {
     if (Platform.OS === 'android') {
@@ -170,9 +178,11 @@ export default function App() {
         input[2 * INPUT_SIZE * INPUT_SIZE + i] = b / 255;
       }
 
-      // รัน inference
+      // รัน inference + วัดเวลา
       const tensor = new Tensor('float32', input, [1, 3, INPUT_SIZE, INPUT_SIZE]);
+      const t0 = Date.now();
       const result = await session.run({ images: tensor });
+      setInferenceMs(Date.now() - t0);
       const outputData = result.output0.data as Float32Array;
       setDetections(parseDetections(outputData));
     } catch (e) {
@@ -186,6 +196,23 @@ export default function App() {
     return (
       <View style={styles.center}>
         <Text style={styles.text}>ต้องการสิทธิ์เข้าถึงกล้อง</Text>
+      </View>
+    );
+  }
+
+  if (!isRunning) {
+    return (
+      <View style={styles.homeScreen}>
+        <Text style={styles.homeTitle}>PPE Detection</Text>
+        <Text style={styles.homeSubtitle}>ระบบตรวจจับอุปกรณ์ป้องกันส่วนบุคคล</Text>
+        <TouchableOpacity
+          style={[styles.inferenceButton, !session && styles.inferenceButtonDisabled]}
+          onPress={() => setIsRunning(true)}
+          disabled={!session}>
+          <Text style={styles.inferenceButtonText}>
+            {session ? '▶ Inference' : 'กำลังโหลดโมเดล...'}
+          </Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -224,11 +251,29 @@ export default function App() {
           </Text>
         </View>
       ))}
-      {statusText !== '' && (
-        <View style={styles.statusOverlay}>
-          <Text style={styles.text}>{statusText}</Text>
+      {inferenceMs > 0 && (
+        <View style={styles.fpsOverlay}>
+          <Text style={styles.fpsText}>
+            {(1000 / inferenceMs).toFixed(1)} FPS  ·  {inferenceMs} ms
+          </Text>
         </View>
       )}
+      <TouchableOpacity
+        style={styles.flipButton}
+        onPress={() => setCameraPosition(p => (p === 'back' ? 'front' : 'back'))}>
+        <Text style={styles.flipButtonText}>
+          {cameraPosition === 'back' ? '🔄 หน้า' : '🔄 หลัง'}
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.startButton, styles.stopButton]}
+        onPress={() => {
+          setIsRunning(false);
+          setDetections([]);
+          setInferenceMs(0);
+        }}>
+        <Text style={styles.startButtonText}>⏸ Stop</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -251,5 +296,89 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.6)',
     padding: 12,
     borderRadius: 8,
+  },
+  flipButton: {
+    position: 'absolute',
+    bottom: 40,
+    right: 20,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 30,
+  },
+  flipButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  fpsOverlay: {
+    position: 'absolute',
+    top: 40,
+    left: 20,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  fpsText: {
+    color: '#00FF00',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  startButton: {
+    position: 'absolute',
+    bottom: 40,
+    alignSelf: 'center',
+    paddingHorizontal: 28,
+    paddingVertical: 14,
+    borderRadius: 30,
+  },
+  playButton: {
+    backgroundColor: 'rgba(0,200,83,0.9)',
+  },
+  stopButton: {
+    backgroundColor: 'rgba(229,57,53,0.9)',
+  },
+  startButtonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  homeScreen: {
+    flex: 1,
+    backgroundColor: '#121212',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  homeTitle: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#42A5F5',
+    marginBottom: 8,
+  },
+  homeSubtitle: {
+    fontSize: 16,
+    color: '#B0BEC5',
+    marginBottom: 60,
+  },
+  inferenceButton: {
+    backgroundColor: '#1976D2',
+    paddingHorizontal: 48,
+    paddingVertical: 18,
+    borderRadius: 30,
+    elevation: 6,
+    shadowColor: '#42A5F5',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 6,
+  },
+  inferenceButtonDisabled: {
+    backgroundColor: '#37474F',
+  },
+  inferenceButtonText: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: 'bold',
   },
 });
