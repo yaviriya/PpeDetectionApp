@@ -59,10 +59,23 @@ PpeDetectionApp/
 - [x] แก้ปัญหา detection ผิดพลาด — เพิ่ม NMS + ปรับ confidence threshold 0.25 → 0.45
 - [x] ทดสอบบน Samsung Galaxy S23 Ultra (Android 16) — แอปรันได้สำเร็จ, กล้อง + bounding box ทำงานปกติ (เครื่องเทสต์เฉพาะของโปรเจค)
 
+## ผลเทสต์ FPS (วัดบน S23 Ultra)
+
+| โมเดล | FPS | inference | หมายเหตุ |
+|-------|-----|-----------|----------|
+| **YOLO26s** (4 คลาส) | ~3.4–4.2 | 236–296ms | ใหญ่ 36.4MB, เริ่มกระตุก |
+| **YOLOv8s** (5 คลาส, `best_22032026`) | **~10 FPS** | **~95ms** | เล็ก 12.2MB, ลื่นกว่า **~2.6 เท่า** |
+
+→ สรุป: **YOLOv8s เร็วกว่า YOLO26s ชัดเจน** เลยตัดสินใจเทรน YOLOv8s 4 คลาสใหม่
+
 ## สิ่งที่ยังต้องทำ
 
-- [ ] ทดสอบความแม่นยำ detection บนเครื่องจริงหลัง NMS + threshold ใหม่
-- [ ] ปรับ performance ถ้าช้าเกินไปบนเครื่องจริง
+- [ ] **เทรน YOLOv8s 4 คลาส** (Fall-Detected, Hardhat, NO-Hardhat, Safety-Cone — ตัด vest) — กำลังเทรนบน **Google Colab**
+- [ ] **พอได้ `.pt` แล้ว → แปลงเป็น onnx** (`yolo export format=onnx imgsz=640 opset=19` ผ่าน onnxslim) → swap แทน `best_22032026.onnx` ใน `assets/` → **build ใหม่ (gradlew installDebug)** → เช็ค `CLASS_NAMES` 4 คลาสให้ index ตรงกับ `model.names` + output shape เป็น `[1, 8, 8400]` (4 bbox + 4 คลาส)
+- [ ] **เทสต์ 2 แบบ เทียบผล detect (Hardhat / NO-Hardhat / Safety-Cone / Fall-Detected):**
+  - 4.1 **โค้ดปัจจุบัน (stretch resize)** — ดูว่าโมเดล YOLOv8s ทนการ resize ยืดได้ดีแค่ไหน
+  - 4.2 **letterbox fix** — โค้ด letterbox อยู่ใน git history commit `c8ae469` (กู้กลับ/cherry-pick ได้) เทียบผลกับ 4.1 ว่า fix ช่วยมากน้อยแค่ไหน
+- [ ] ทดสอบความแม่นยำ detection บนเครื่องจริงหลัง NMS + threshold
 
 ## วิธีทดสอบบน Android จริง
 
@@ -72,8 +85,27 @@ PpeDetectionApp/
 4. เชื่อมต่อมือถือกับคอมด้วยสาย USB → เลือก File Transfer (MTP)
 5. กด Allow USB Debugging บนมือถือ
 6. เช็คว่าเครื่องเจอ: `adb devices`
-7. เปิด Metro ใน terminal 1: `npx react-native start`
-8. รันใน terminal 2: `npx react-native run-android --port 8083`
+7. เปิด Metro ใน **terminal 1** (เปิดทิ้งไว้):
+   ```powershell
+   cd D:\Coding\ppedetect_project\PpeDetectionApp
+   npx react-native start --port 8081
+   ```
+8. **terminal 2** — build + install + เปิดแอป (แบบแมนวล แนะนำ):
+   ```powershell
+   cd D:\Coding\ppedetect_project\PpeDetectionApp
+   adb reverse tcp:8081 tcp:8081
+   cd android
+   .\gradlew.bat app:installDebug -PreactNativeDevServerPort=8081
+   ```
+   เมื่อเห็น `BUILD SUCCESSFUL` แล้ว เปิดแอป:
+   ```powershell
+   cd ..
+   adb shell monkey -p com.ppedetectionapp -c android.intent.category.LAUNCHER 1
+   ```
+   - **สำคัญสุด: ถ้าเปลี่ยนไฟล์โมเดลใน `assets/` ต้อง build ใหม่ (gradlew installDebug) เสมอ** — รัน Metro/Fast Refresh เฉยๆ ไม่พอ เพราะโมเดลฝังใน APK ตอน build (ไม่งั้นแอปจะหา onnx ใน APK ไม่เจอ → "โหลดโมเดลไม่สำเร็จ")
+   - ใช้ `.\gradlew.bat` (มี `.\` นำหน้า) — RN CLI เรียกแบบไม่มีจะ error `'gradlew.bat' is not recognized`
+   - ใช้ port **8081** (default ของ RN) — ถ้าจะเปลี่ยนต้องตรงกันทั้ง 3 จุด: Metro `--port`, `adb reverse`, `-PreactNativeDevServerPort`
+   - **อย่าใช้ `npx react-native run-android` ตอน Metro รันอยู่แล้ว** — มันเด้งถาม port, ตอบ **Y = เปิด Metro ตัวที่สอง** (ตอบ N ถึงจะใช้ตัวเดิม). แมนวล gradlew เลี่ยงปัญหานี้ทั้งหมด
 9. ถ้าเจอ dialog เตือน 16KB page size จาก Samsung → กด dismiss ได้เลย (แค่ warning ไม่ใช่ crash)
 
 ## การรันโปรเจค
