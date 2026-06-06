@@ -147,6 +147,8 @@ export default function App() {
       if (!exists) {
         await RNFS.copyFileAssets('best_01062026_1057pm.onnx', dest);
       }
+      // ใช้ CPU (default) — เร็วสุดสำหรับโมเดลนี้
+      // ทดลองแล้ว: NNAPI build ไม่ได้ (Split op), XNNPACK ช้ากว่า 2 เท่า (~550ms vs ~250ms)
       const sess = await InferenceSession.create(dest);
       setSession(sess);
     } catch (e) {

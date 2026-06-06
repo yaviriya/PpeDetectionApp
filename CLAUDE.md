@@ -71,7 +71,10 @@ PpeDetectionApp/
   3. **เพิ่ม FPS/คุณภาพภาพ** — ภาพคมขึ้น (เบลอน้อยลง) จะลด confusion เอง
   4. **ดีสุด: เทรนใหม่** — เพิ่มภาพหมวกแดงในชุดเทรน + ใส่กรวยจริงให้โมเดลแยกออก
 - [ ] **เทรนโมเดลใหม่ด้วย YOLOv8s แล้วลองในแอป** (เผื่อ inference เร็วขึ้น) — โมเดลปัจจุบันเป็น **YOLO26s** (36.4MB) ได้ ~3.7-4.0 FPS / 233-360ms. **เกร็ด: ตอนรันโมเดลเก่า `best_22032026.onnx` ที่เป็น YOLOv8s (12.2MB, เล็กกว่า 3 เท่า) รันลื่นกว่านี้ชัดเจน**. แผน: เทรน YOLOv8s บนชุดข้อมูล 4 คลาสเดิม → export onnx (`imgsz=640 opset=19` ผ่าน onnxslim) → swap ไฟล์ใน assets + เช็ค `CLASS_NAMES` ให้ index ตรงกับ `model.names`. **หมายเหตุสำคัญ: แอปตอนนี้ทำ letterbox แล้ว** (แก้ไปรอบนี้) เลยแค่สลับไฟล์ onnx ได้เลย ไม่ต้องแก้ preprocessing
-  - ทางเลือกเสริม (ถ้าไม่อยากเทรนใหม่): เปิด **NNAPI execution provider** ใน `InferenceSession.create(dest, { executionProviders: ['nnapi'] })` ให้ใช้ NPU/GPU ของ S23 (Snapdragon 8 Gen 2) แทน CPU — แก้บรรทัดเดียว อาจเร็วขึ้น 2-4 เท่า (บาง op อาจ fallback กลับ CPU)
+  - ❌ **ทดลอง execution provider แล้ว (6 มิ.ย. 2026) — ไม่ช่วย อย่าลองซ้ำ:**
+    - **NNAPI** → build ไม่ได้ error `op_builder_helpers.cc:144 AddNnapiSplit count [0] does not evenly divide dimension 3 [64]` (Split op ใน detection head ของ YOLO ไม่รองรับ) → โยน error fallback CPU
+    - **XNNPACK** → โหลดได้แต่**ช้ากว่า 2 เท่า** (~550ms / 1.7-1.8 FPS เทียบ CPU ~250ms / 3.4-4.2 FPS)
+    - **สรุป: CPU (default) เร็วสุดสำหรับ YOLO26s นี้** — การเร่งจริงต้องไปทางโมเดลเล็กลง (YOLOv8s) หรือ quantize เท่านั้น
 - [ ] ทำเป็นไฟล์ APK (ตอนนี้รันผ่าน USB/Metro เท่านั้น)
 - [ ] แจ้งเตือนผ่าน Line หรือ Telegram — เงื่อนไขเป็น OR ทั้งหมด: เจอ `NO-Hardhat` **หรือ** เจอ `Fall-Detected` **หรือ** ไม่เจอ `Safety-Cone` → ส่ง alert
   - หมายเหตุ: ข้อ "ไม่เจอ Safety-Cone" แบบ OR จะ trigger แทบทุกเฟรม (เพราะปกติไม่มีกรวยในภาพ) — ตอนทำจริงควรเช็กกับเจ้าของงานอีกที + ต้องมี cooldown กัน spam และเลือก Line/Telegram ก่อน
