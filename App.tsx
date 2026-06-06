@@ -13,7 +13,7 @@ import { InferenceSession, Tensor } from 'onnxruntime-react-native';
 import RNFS from 'react-native-fs';
 
 const INPUT_SIZE = 640;
-const CONFIDENCE_THRESHOLD = 0.45;
+const CONFIDENCE_THRESHOLD = 0.35;
 const NMS_IOU_THRESHOLD = 0.45;
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
@@ -21,8 +21,7 @@ const CLASS_NAMES: Record<number, string> = {
   0: 'Fall-Detected',
   1: 'Hardhat',
   2: 'NO-Hardhat',
-  3: 'Safety Cone',
-  4: 'vest',
+  3: 'Safety-Cone',
 };
 
 type Detection = {
@@ -37,7 +36,9 @@ type Detection = {
 function getBoxColor(label: string): string {
   if (label === 'Hardhat') return '#00FF00';
   if (label === 'NO-Hardhat') return '#FF0000';
-  return '#FFFF00';
+  if (label === 'Fall-Detected') return '#FF1493';
+  if (label === 'Safety-Cone') return '#FFFF00';
+  return '#8B4513';
 }
 
 function iou(a: Detection, b: Detection): number {
@@ -63,7 +64,9 @@ function applyNMS(detections: Detection[]): Detection[] {
   return kept;
 }
 
-function parseDetections(data: Float32Array): Detection[] {
+type LetterboxInfo = { nw: number; nh: number; padLeft: number; padTop: number };
+
+function parseDetections(data: Float32Array, lb: LetterboxInfo): Detection[] {
   const numAnchors = 8400;
   const numClasses = Object.keys(CLASS_NAMES).length;
   const results: Detection[] = [];
@@ -85,13 +88,14 @@ function parseDetections(data: Float32Array): Detection[] {
     const w  = data[2 * numAnchors + i];
     const h  = data[3 * numAnchors + i];
 
+    // ถอด letterbox: หัก padding แล้ว scale ตามขนาดที่ resize จริง → พิกัดจอ
     results.push({
       label: CLASS_NAMES[classIdx],
       confidence: maxScore,
-      x1: ((cx - w / 2) / INPUT_SIZE) * SCREEN_W,
-      y1: ((cy - h / 2) / INPUT_SIZE) * SCREEN_H,
-      x2: ((cx + w / 2) / INPUT_SIZE) * SCREEN_W,
-      y2: ((cy + h / 2) / INPUT_SIZE) * SCREEN_H,
+      x1: ((cx - w / 2) - lb.padLeft) / lb.nw * SCREEN_W,
+      y1: ((cy - h / 2) - lb.padTop) / lb.nh * SCREEN_H,
+      x2: ((cx + w / 2) - lb.padLeft) / lb.nw * SCREEN_W,
+      y2: ((cy + h / 2) - lb.padTop) / lb.nh * SCREEN_H,
     });
   }
   return applyNMS(results);
@@ -123,7 +127,7 @@ export default function App() {
     if (!session || !isRunning) return;
     const interval = setInterval(() => {
       runDetection();
-    }, 200);
+    }, 400);
     return () => clearInterval(interval);
   }, [session, isRunning]);
 
@@ -138,10 +142,10 @@ export default function App() {
 
   const loadModel = async () => {
     try {
-      const dest = `${RNFS.DocumentDirectoryPath}/best_22032026.onnx`;
+      const dest = `${RNFS.DocumentDirectoryPath}/best_01062026_1057pm.onnx`;
       const exists = await RNFS.exists(dest);
       if (!exists) {
-        await RNFS.copyFileAssets('best_22032026.onnx', dest);
+        await RNFS.copyFileAssets('best_01062026_1057pm.onnx', dest);
       }
       const sess = await InferenceSession.create(dest);
       setSession(sess);
@@ -157,25 +161,40 @@ export default function App() {
     try {
       // จับ snapshot จากกล้อง
       const image = await camera.current.takeSnapshot();
+      const w0 = image.width;
+      const h0 = image.height;
 
-      // resize เป็น 640x640
-      const resized = await image.resizeAsync(INPUT_SIZE, INPUT_SIZE);
+      // letterbox: resize รักษาสัดส่วน (ด้านยาวสุด = 640) แล้วเติมขอบเทา 114 ให้ครบ 640x640
+      // โมเดลเทรนด้วย letterbox — ถ้า resize ยืดจะทำให้คะแนนคลาสตก
+      const scale = INPUT_SIZE / Math.max(w0, h0);
+      const nw = Math.round(w0 * scale);
+      const nh = Math.round(h0 * scale);
+      const padLeft = Math.floor((INPUT_SIZE - nw) / 2);
+      const padTop = Math.floor((INPUT_SIZE - nh) / 2);
+
+      const resized = await image.resizeAsync(nw, nh);
 
       // ดึง raw pixel data (BGRA format บน Android)
       const rawPixel = await resized.toRawPixelDataAsync();
       const pixels = new Uint8Array(rawPixel.buffer);
       const isBGRA = rawPixel.pixelFormat === 'BGRA';
+      const rw = rawPixel.width;
+      const rh = rawPixel.height;
 
-      // แปลงเป็น Float32Array [1, 3, 640, 640] RGB normalized 0-1
-      const input = new Float32Array(3 * INPUT_SIZE * INPUT_SIZE);
-      for (let i = 0; i < INPUT_SIZE * INPUT_SIZE; i++) {
-        const base = i * 4;
-        const r = isBGRA ? pixels[base + 2] : pixels[base];
-        const g = pixels[base + 1];
-        const b = isBGRA ? pixels[base] : pixels[base + 2];
-        input[0 * INPUT_SIZE * INPUT_SIZE + i] = r / 255;
-        input[1 * INPUT_SIZE * INPUT_SIZE + i] = g / 255;
-        input[2 * INPUT_SIZE * INPUT_SIZE + i] = b / 255;
+      // แปลงเป็น Float32Array [1, 3, 640, 640] RGB normalized 0-1, พื้นหลังเทา 114/255
+      const plane = INPUT_SIZE * INPUT_SIZE;
+      const input = new Float32Array(3 * plane).fill(114 / 255);
+      for (let y = 0; y < rh; y++) {
+        for (let x = 0; x < rw; x++) {
+          const src = (y * rw + x) * 4;
+          const r = isBGRA ? pixels[src + 2] : pixels[src];
+          const g = pixels[src + 1];
+          const b = isBGRA ? pixels[src] : pixels[src + 2];
+          const di = (y + padTop) * INPUT_SIZE + (x + padLeft);
+          input[di] = r / 255;
+          input[plane + di] = g / 255;
+          input[2 * plane + di] = b / 255;
+        }
       }
 
       // รัน inference + วัดเวลา
@@ -184,7 +203,7 @@ export default function App() {
       const result = await session.run({ images: tensor });
       setInferenceMs(Date.now() - t0);
       const outputData = result.output0.data as Float32Array;
-      setDetections(parseDetections(outputData));
+      setDetections(parseDetections(outputData, { nw, nh, padLeft, padTop }));
     } catch (e) {
       console.error('Detection error:', e);
     } finally {
