@@ -79,3 +79,6 @@ captureScreen/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Secrets (Telegram token/chat_id) — ใช้ telegram.config.example.ts เป็นแม่แบบ
+telegram.config.ts

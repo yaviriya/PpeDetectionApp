@@ -59,23 +59,31 @@ PpeDetectionApp/
 - [x] แก้ปัญหา detection ผิดพลาด — เพิ่ม NMS + ปรับ confidence threshold 0.25 → 0.45
 - [x] ทดสอบบน Samsung Galaxy S23 Ultra (Android 16) — แอปรันได้สำเร็จ, กล้อง + bounding box ทำงานปกติ (เครื่องเทสต์เฉพาะของโปรเจค)
 
-## ผลเทสต์ FPS (วัดบน S23 Ultra)
+## ผลเทสต์ FPS (วัดบน S23 Ultra, 4 คลาส + letterbox)
 
-| โมเดล | FPS | inference | หมายเหตุ |
-|-------|-----|-----------|----------|
-| **YOLO26s** (4 คลาส) | ~3.4–4.2 | 236–296ms | ใหญ่ 36.4MB, เริ่มกระตุก |
-| **YOLOv8s** (5 คลาส, `best_22032026`) | **~10 FPS** | **~95ms** | เล็ก 12.2MB, ลื่นกว่า **~2.6 เท่า** |
+| โมเดล | FPS | inference | ขนาด onnx | สรุป |
+|-------|-----|-----------|-----------|------|
+| YOLO26s | ~3.5 | ~270ms | 36.4MB | ช้า เริ่มกระตุก |
+| YOLOv8s แท้ (`bestv8s`) | ~3.3 | ~300ms | 42.7MB | **ไม่เร็วกว่า** YOLO26s (s แท้ใหญ่) |
+| **YOLOv8n (`bestv8n`)** | **~8.5** | **117ms** | 11.7MB | **เร็วสุด ✅ ใช้ตัวนี้** |
+| `best_22032026` (เก่า) | ~10 | ~95ms | 12.2MB | จริงๆ คือ **nano** (เลยเร็ว ไม่ใช่ s) |
 
-→ สรุป: **YOLOv8s เร็วกว่า YOLO26s ชัดเจน** เลยตัดสินใจเทรน YOLOv8s 4 คลาสใหม่
+→ สรุป: **ความเร็วมาจากขนาดโมเดล (nano) ไม่ใช่ตระกูล** — `bestv8n_07062026` (4 คลาส, nano) คือโมเดลหลักตอนนี้
+
+## ฟีเจอร์แจ้งเตือน Telegram (ทำแล้ว)
+
+- เจอ `NO-Hardhat` หรือ `Fall-Detected` ต่อเนื่อง 0.8 วิ → ส่ง alert เข้ากลุ่ม Telegram (debounce + cooldown 30 วิ)
+- โหมด **"เฝ้าโซนกรวย"** (ปุ่ม toggle): เปิดแล้วถ้า `Safety-Cone` หาย >5 วิ → alert (scenario โซนที่บังคับต้องมีกรวย)
+- ส่งผ่าน Bot API `sendPhoto` (อัปไฟล์ตรง ไม่ต้อง host) — **token + chat_id ฝังในแอป (เฟส 1)**
+- ตอนนี้ส่ง **รูปดิบ** (ยังไม่มีกรอบในรูป — ดู "สิ่งที่ยังต้องทำ")
 
 ## สิ่งที่ยังต้องทำ
 
-- [ ] **เทรน YOLOv8s 4 คลาส** (Fall-Detected, Hardhat, NO-Hardhat, Safety-Cone — ตัด vest) — กำลังเทรนบน **Google Colab**
-- [ ] **พอได้ `.pt` แล้ว → แปลงเป็น onnx** (`yolo export format=onnx imgsz=640 opset=19` ผ่าน onnxslim) → swap แทน `best_22032026.onnx` ใน `assets/` → **build ใหม่ (gradlew installDebug)** → เช็ค `CLASS_NAMES` 4 คลาสให้ index ตรงกับ `model.names` + output shape เป็น `[1, 8, 8400]` (4 bbox + 4 คลาส)
-- [ ] **เทสต์ 2 แบบ เทียบผล detect (Hardhat / NO-Hardhat / Safety-Cone / Fall-Detected):**
-  - 4.1 **โค้ดปัจจุบัน (stretch resize)** — ดูว่าโมเดล YOLOv8s ทนการ resize ยืดได้ดีแค่ไหน
-  - 4.2 **letterbox fix** — โค้ด letterbox อยู่ใน git history commit `c8ae469` (กู้กลับ/cherry-pick ได้) เทียบผลกับ 4.1 ว่า fix ช่วยมากน้อยแค่ไหน
-- [ ] ทดสอบความแม่นยำ detection บนเครื่องจริงหลัง NMS + threshold
+- [ ] **วาดกรอบลงในรูป alert** (ทุกคลาสเหมือนในแอป) — เคยลอง `react-native-view-shot` แต่ **capture บน UI thread + v8n 10 FPS = แอปค้าง** → ถอนออกแล้ว. ครั้งหน้าใช้ **Skia headless** (วาดบน offscreen surface ไม่บล็อก UI thread, แสงเป๊ะ, ไม่มีแฟลช) แลกกับ RAM + build ใหม่
+- [ ] **แก้รูป alert มืด** — `takeSnapshot()` ได้ภาพมืดกว่า live preview (จอผ่าน auto-exposure แต่ snapshot ดิบกว่า) → ใช้ `takePhoto()` แทน (exposure ถูก) แต่ต้อง map พิกัดกรอบใหม่ (มิติต่างจาก snapshot)
+- [ ] **ย้าย token Telegram ไป backend** (เฟส 2) — ตอนนี้ฝังในแอป ถ้าแจก APK ให้คนอื่น token หลุด. ทำ relay บน GCP Cloud Run (Python LINE/Telegram SDK) + อาจรองรับ LINE OA ด้วย
+- [ ] ทำเป็นไฟล์ APK (ตอนนี้รันผ่าน USB/Metro)
+- [ ] ลด false positive (หมวกแดงโดนเดาเป็น Safety-Cone บางเฟรม)
 
 ## วิธีทดสอบบน Android จริง
 

@@ -11,11 +11,17 @@ import {
 import { Camera, CameraRef, useCameraDevice } from 'react-native-vision-camera';
 import { InferenceSession, Tensor } from 'onnxruntime-react-native';
 import RNFS from 'react-native-fs';
+import { TELEGRAM_TOKEN, TELEGRAM_CHAT_ID } from './telegram.config';
 
 const INPUT_SIZE = 640;
 const CONFIDENCE_THRESHOLD = 0.35;
 const NMS_IOU_THRESHOLD = 0.45;
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+
+// ── Telegram alert (token/chat_id อยู่ใน telegram.config.ts — gitignore กัน token หลุด) ──
+const ALERT_CONFIRM_MS = 800; // เงื่อนไขอันตรายต้องจริงต่อเนื่อง ~0.8 วิ ถึงเตือน
+const CONE_CONFIRM_MS = 5000; // กรวยหายต้องนานต่อเนื่อง 5 วิ ถึงเตือน
+const ALERT_COOLDOWN_MS = 30000; // เงื่อนไขเดิมส่งซ้ำได้ทุก 30 วิ (กัน spam)
 
 const CLASS_NAMES: Record<number, string> = {
   0: 'Fall-Detected',
@@ -39,6 +45,23 @@ function getBoxColor(label: string): string {
   if (label === 'Fall-Detected') return '#FF1493'; // ชมพู
   if (label === 'Safety-Cone') return '#8B4513';  // น้ำตาล
   return '#FFFF00';                                // เหลือง (default)
+}
+
+// ส่งรูป (จาก path ไฟล์) เข้า Telegram — sendPhoto อัปไฟล์ตรง ไม่ต้อง host
+async function sendTelegramPhoto(fileUri: string, caption: string) {
+  try {
+    const uri = fileUri.startsWith('file://') ? fileUri : `file://${fileUri}`;
+    const form = new FormData();
+    form.append('chat_id', TELEGRAM_CHAT_ID);
+    form.append('caption', caption);
+    form.append('photo', { uri, type: 'image/jpeg', name: 'alert.jpg' } as any);
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`, {
+      method: 'POST',
+      body: form,
+    });
+  } catch (e) {
+    console.error('Telegram send failed:', e);
+  }
 }
 
 function iou(a: Detection, b: Detection): number {
@@ -112,6 +135,12 @@ export default function App() {
   const device = useCameraDevice(cameraPosition);
   const camera = useRef<CameraRef>(null);
   const isDetecting = useRef(false);
+  const [coneZoneMode, setConeZoneMode] = useState(false);
+  const coneZoneModeRef = useRef(false);
+  // เวลาที่เงื่อนไขเริ่มเป็นจริง (0 = ยังไม่จริง) + เวลาส่ง alert ล่าสุด (กัน spam)
+  const condSince = useRef({ noHardhat: 0, fall: 0, coneAbsent: 0 });
+  const lastAlert = useRef({ noHardhat: 0, fall: 0, coneAbsent: 0 });
+  const capturing = useRef(false); // กันส่ง alert ซ้อน
 
   useEffect(() => {
     requestPermissions();
@@ -142,10 +171,10 @@ export default function App() {
 
   const loadModel = async () => {
     try {
-      const dest = `${RNFS.DocumentDirectoryPath}/bestv8s_060062026.onnx`;
+      const dest = `${RNFS.DocumentDirectoryPath}/bestv8n_07062026.onnx`;
       const exists = await RNFS.exists(dest);
       if (!exists) {
-        await RNFS.copyFileAssets('bestv8s_060062026.onnx', dest);
+        await RNFS.copyFileAssets('bestv8n_07062026.onnx', dest);
       }
       const sess = await InferenceSession.create(dest);
       setSession(sess);
@@ -154,6 +183,59 @@ export default function App() {
       setStatusText('โหลดโมเดลไม่สำเร็จ');
     }
   };
+
+  // save เฟรม → render กรอบทับ offscreen → capture → ส่ง Telegram
+  const captureAndSend = useCallback(
+    async (image: any, _dets: Detection[], caption: string) => {
+      if (capturing.current) return; // กำลังส่งอยู่ ข้ามไปก่อน
+      capturing.current = true;
+      try {
+        const path: string = await image.saveToTemporaryFileAsync('jpg', 80);
+        await sendTelegramPhoto(path, caption); // ส่งรูปดิบ (กรอบไว้ทำด้วย Skia ทีหลัง)
+      } catch (e) {
+        console.error('alert send failed:', e);
+      } finally {
+        capturing.current = false;
+      }
+    },
+    [],
+  );
+
+  // เช็คเงื่อนไข alert: ต้องเป็นจริงต่อเนื่อง (debounce) + ผ่าน cooldown ถึงส่ง
+  const checkAlerts = useCallback((dets: Detection[], image: any) => {
+    const now = Date.now();
+    const has = (label: string) => dets.some(d => d.label === label);
+    const fire = (
+      key: 'noHardhat' | 'fall' | 'coneAbsent',
+      active: boolean,
+      confirmMs: number,
+    ): boolean => {
+      if (!active) {
+        condSince.current[key] = 0;
+        return false;
+      }
+      if (condSince.current[key] === 0) condSince.current[key] = now;
+      if (
+        now - condSince.current[key] >= confirmMs &&
+        now - lastAlert.current[key] >= ALERT_COOLDOWN_MS
+      ) {
+        lastAlert.current[key] = now;
+        return true;
+      }
+      return false;
+    };
+
+    const t = new Date().toLocaleString('th-TH');
+    if (fire('noHardhat', has('NO-Hardhat'), ALERT_CONFIRM_MS)) {
+      captureAndSend(image, dets, `⚠️ พบคนไม่สวมหมวกนิรภัย (NO-Hardhat)\n🕐 ${t}`);
+    }
+    if (fire('fall', has('Fall-Detected'), ALERT_CONFIRM_MS)) {
+      captureAndSend(image, dets, `🚨 ตรวจพบการล้ม (Fall-Detected)\n🕐 ${t}`);
+    }
+    if (coneZoneModeRef.current && fire('coneAbsent', !has('Safety-Cone'), CONE_CONFIRM_MS)) {
+      captureAndSend(image, dets, `⚠️ กรวยนิรภัยหายจากโซนเฝ้าระวัง\n🕐 ${t}`);
+    }
+  }, [captureAndSend]);
 
   const runDetection = useCallback(async () => {
     if (isDetecting.current || !session || !camera.current) return;
@@ -203,13 +285,15 @@ export default function App() {
       const result = await session.run({ images: tensor });
       setInferenceMs(Date.now() - t0);
       const outputData = result.output0.data as Float32Array;
-      setDetections(parseDetections(outputData, { nw, nh, padLeft, padTop }));
+      const dets = parseDetections(outputData, { nw, nh, padLeft, padTop });
+      setDetections(dets);
+      checkAlerts(dets, image);
     } catch (e) {
       console.error('Detection error:', e);
     } finally {
       isDetecting.current = false;
     }
-  }, [session]);
+  }, [session, checkAlerts]);
 
   if (!hasPermission) {
     return (
@@ -278,6 +362,18 @@ export default function App() {
         </View>
       )}
       <TouchableOpacity
+        style={[styles.coneToggle, coneZoneMode && styles.coneToggleOn]}
+        onPress={() => {
+          const next = !coneZoneMode;
+          coneZoneModeRef.current = next;
+          condSince.current.coneAbsent = 0; // เริ่มจับเวลาใหม่
+          setConeZoneMode(next);
+        }}>
+        <Text style={styles.coneToggleText}>
+          🚧 เฝ้าโซนกรวย: {coneZoneMode ? 'ON' : 'OFF'}
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
         style={styles.flipButton}
         onPress={() => setCameraPosition(p => (p === 'back' ? 'front' : 'back'))}>
         <Text style={styles.flipButtonText}>
@@ -342,6 +438,23 @@ const styles = StyleSheet.create({
   fpsText: {
     color: '#00FF00',
     fontSize: 14,
+    fontWeight: 'bold',
+  },
+  coneToggle: {
+    position: 'absolute',
+    top: 40,
+    right: 20,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  coneToggleOn: {
+    backgroundColor: 'rgba(255,140,0,0.9)',
+  },
+  coneToggleText: {
+    color: '#fff',
+    fontSize: 13,
     fontWeight: 'bold',
   },
   startButton: {
