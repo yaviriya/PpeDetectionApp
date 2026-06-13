@@ -12,6 +12,7 @@ import { Camera, CameraRef, useCameraDevice } from 'react-native-vision-camera';
 import { InferenceSession, Tensor } from 'onnxruntime-react-native';
 import RNFS from 'react-native-fs';
 import { TELEGRAM_TOKEN, TELEGRAM_CHAT_ID } from './telegram.config';
+import Geolocation from 'react-native-geolocation-service';
 
 const INPUT_SIZE = 640;
 const CONFIDENCE_THRESHOLD = 0.35;
@@ -38,6 +39,15 @@ type Detection = {
   x2: number;
   y2: number;
 };
+
+// สร้าง caption: หัวข้อ + เหตุการณ์ + วันที่ พ.ศ. + เวลา (คำนวณ พ.ศ. เอง กัน Hermes Intl ไม่รองรับ)
+function buildCaption(event: string, location: string): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const date = `${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear() + 543}`;
+  const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  return `ระบบตรวจจับการสวมใส่ PPE:\n\n${event}\n📅 วันที่: ${date}\n🕐 เวลา: ${time}\n📍 สถานที่: ${location}`;
+}
 
 function getBoxColor(label: string): string {
   if (label === 'Hardhat') return '#00FF00';      // เขียว
@@ -141,6 +151,7 @@ export default function App() {
   const condSince = useRef({ noHardhat: 0, fall: 0, coneAbsent: 0 });
   const lastAlert = useRef({ noHardhat: 0, fall: 0, coneAbsent: 0 });
   const capturing = useRef(false); // กันส่ง alert ซ้อน
+  const locationRef = useRef('กำลังหาตำแหน่ง...');
 
   useEffect(() => {
     requestPermissions();
@@ -159,6 +170,11 @@ export default function App() {
     }, 200);
     return () => clearInterval(interval);
   }, [session, isRunning]);
+
+  // ดึงตำแหน่งตอนเริ่ม Inference (cache ไว้ใช้ใน caption — ไม่ดึงสดทุก alert)
+  useEffect(() => {
+    if (isRunning) updateLocation();
+  }, [isRunning]);
 
   const requestPermissions = async () => {
     if (Platform.OS === 'android') {
@@ -184,7 +200,48 @@ export default function App() {
     }
   };
 
-  // save เฟรม → render กรอบทับ offscreen → capture → ส่ง Telegram
+  // ดึง GPS + reverse geocode (Nominatim) → เก็บ string สถานที่ไว้ใช้ใน caption
+  const updateLocation = useCallback(async () => {
+    try {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+      );
+      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+        locationRef.current = 'ไม่อนุญาตให้เข้าถึงตำแหน่ง';
+        return;
+      }
+      const pos = await new Promise<any>((resolve, reject) => {
+        Geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 60000,
+        });
+      });
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      let place = '';
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1&accept-language=th`,
+          { headers: { 'User-Agent': 'PpeDetectionApp/1.0' } },
+        );
+        const json = await res.json();
+        // ใช้ที่อยู่เต็ม (display_name) แต่ตัด segment "ประเทศ..." ออก (ใช้แค่ในประเทศ)
+        place = (json.display_name || '')
+          .split(',')
+          .map((s: string) => s.trim())
+          .filter((s: string) => s && !s.includes('ประเทศ'))
+          .join(', ');
+      } catch {}
+      const coord = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+      locationRef.current = place ? `${place} (${coord})` : coord;
+    } catch (e) {
+      console.error('location failed:', e);
+      locationRef.current = 'ไม่ทราบตำแหน่ง';
+    }
+  }, []);
+
+  // save เฟรม → ส่งเข้า Telegram
   const captureAndSend = useCallback(
     async (image: any, _dets: Detection[], caption: string) => {
       if (capturing.current) return; // กำลังส่งอยู่ ข้ามไปก่อน
@@ -225,15 +282,15 @@ export default function App() {
       return false;
     };
 
-    const t = new Date().toLocaleString('th-TH');
+    const loc = locationRef.current;
     if (fire('noHardhat', has('NO-Hardhat'), ALERT_CONFIRM_MS)) {
-      captureAndSend(image, dets, `⚠️ พบคนไม่สวมหมวกนิรภัย (NO-Hardhat)\n🕐 ${t}`);
+      captureAndSend(image, dets, buildCaption('⚠️ พบคนไม่สวมหมวกนิรภัย (NO-Hardhat)', loc));
     }
     if (fire('fall', has('Fall-Detected'), ALERT_CONFIRM_MS)) {
-      captureAndSend(image, dets, `🚨 ตรวจพบการล้ม (Fall-Detected)\n🕐 ${t}`);
+      captureAndSend(image, dets, buildCaption('🚨 ตรวจพบการล้ม (Fall-Detected)', loc));
     }
     if (coneZoneModeRef.current && fire('coneAbsent', !has('Safety-Cone'), CONE_CONFIRM_MS)) {
-      captureAndSend(image, dets, `⚠️ กรวยนิรภัยหายจากโซนเฝ้าระวัง\n🕐 ${t}`);
+      captureAndSend(image, dets, buildCaption('⚠️ ไม่พบการตั้งกรวยจราจร', loc));
     }
   }, [captureAndSend]);
 
@@ -370,7 +427,7 @@ export default function App() {
           setConeZoneMode(next);
         }}>
         <Text style={styles.coneToggleText}>
-          🚧 เฝ้าโซนกรวย: {coneZoneMode ? 'ON' : 'OFF'}
+          🚧 ตรวจการวางกรวย: {coneZoneMode ? 'ON' : 'OFF'}
         </Text>
       </TouchableOpacity>
       <TouchableOpacity

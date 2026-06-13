@@ -17,6 +17,7 @@
     "react": "19.2.3",
     "react-native": "0.85.1",
     "react-native-fs": "^2.20.0",
+    "react-native-geolocation-service": "^5.3.1",
     "react-native-image-resizer": "^1.4.5",
     "react-native-nitro-image": "^0.13.1",
     "react-native-nitro-modules": "^0.35.4",
