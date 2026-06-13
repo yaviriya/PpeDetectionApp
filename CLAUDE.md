@@ -75,29 +75,15 @@ PpeDetectionApp/
 - เจอ `NO-Hardhat` หรือ `Fall-Detected` ต่อเนื่อง 0.8 วิ → ส่ง alert เข้ากลุ่ม Telegram (debounce + cooldown 30 วิ)
 - โหมด **"เฝ้าโซนกรวย"** (ปุ่ม toggle): เปิดแล้วถ้า `Safety-Cone` หาย >5 วิ → alert (scenario โซนที่บังคับต้องมีกรวย)
 - ส่งผ่าน Bot API `sendPhoto` (อัปไฟล์ตรง ไม่ต้อง host) — **token + chat_id ฝังในแอป (เฟส 1)**
-- ตอนนี้ส่ง **รูปดิบ** (ยังไม่มีกรอบในรูป — ดู "สิ่งที่ยังต้องทำ")
+- รูป alert: **วาดกรอบ + label ทุกคลาส** (Skia headless) + **เพิ่มความสว่าง** (Skia ColorMatrix 1.3x) — ถ้า Skia พังมี fallback ส่งรูปดิบ
+- caption: หัวข้อ + วันที่ พ.ศ. + เวลา + location (GPS + Nominatim)
 
 ## สิ่งที่ยังต้องทำ
 
-- [ ] **ปรับรูปแบบข้อความ alert (caption) ของ Telegram** — แก้ที่ตัวแปร caption ใน `checkAlerts` (App.tsx). รูปแบบที่ต้องการ:
-  - บรรทัดแรก (ใต้รูป): หัวข้อ **`ระบบตรวจจับการสวมใส่ PPE`**
-  - บรรทัดถัดมา: เหตุการณ์ที่เจอ (เช่น `⚠️ พบ NO-Hardhat`)
-  - **วันที่ เป็น พ.ศ.** เช่น `7/6/2569` — Gregorian +543 หรือ `toLocaleDateString('th-TH-u-ca-buddhist')`
-  - **เวลา** `HH:MM:SS`
-  - **สถานที่ (location)** — ดึง GPS เครื่อง → พิกัด (lat,lng) + reverse geocode เป็นชื่อ (หมู่บ้าน/ตำบล/อำเภอ/จังหวัด)
-    - ต้องใช้ lib location (`@react-native-community/geolocation` หรือ `react-native-get-location`) + permission `ACCESS_FINE_LOCATION` (build ใหม่)
-    - reverse geocode: Google Maps Geocoding API (ต้องมี API key + อาจมีค่าใช้จ่าย) หรือ Nominatim/OSM (ฟรี แต่ rate-limit)
-    - caveat: GPS ในอาคารอาจไม่แม่น, ดึงครั้งแรกช้า → ควร cache พิกัดล่าสุด, จัดการกรณีไม่มีสัญญาณ
-  - ตัวอย่าง caption เป้าหมาย:
-    ```
-    ระบบตรวจจับการสวมใส่ PPE
-    ⚠️ พบคนไม่สวมหมวกนิรภัย (NO-Hardhat)
-    📅 วันที่: 7/6/2569
-    🕐 เวลา: 17:21:02
-    📍 สถานที่: บ้าน.. ต.. อ.. จ.. (13.7563, 100.5018)
-    ```
-- [ ] **วาดกรอบลงในรูป alert** (ทุกคลาสเหมือนในแอป) — เคยลอง `react-native-view-shot` แต่ **capture บน UI thread + v8n 10 FPS = แอปค้าง** → ถอนออกแล้ว. ครั้งหน้าใช้ **Skia headless** (วาดบน offscreen surface ไม่บล็อก UI thread, แสงเป๊ะ, ไม่มีแฟลช) แลกกับ RAM + build ใหม่
-- [ ] **แก้รูป alert มืด** — `takeSnapshot()` ได้ภาพมืดกว่า live preview (จอผ่าน auto-exposure แต่ snapshot ดิบกว่า) → ใช้ `takePhoto()` แทน (exposure ถูก) แต่ต้อง map พิกัดกรอบใหม่ (มิติต่างจาก snapshot)
+- [x] **caption + วาดกรอบในรูป + แก้รูปมืด — เสร็จแล้ว** (ดู section "ฟีเจอร์แจ้งเตือน Telegram"):
+  - caption: หัวข้อ + วันที่ พ.ศ. (+543 คำนวณเอง กัน Hermes Intl) + เวลา + location (GPS via `react-native-geolocation-service` + Nominatim reverse geocode, ที่อยู่เต็มตัด "ประเทศไทย")
+  - **วาดกรอบ + label ทุกคลาสในรูปด้วย Skia headless** (`@shopify/react-native-skia`, offscreen surface — ไม่ freeze แบบ view-shot) — font ใช้ `Skia.FontMgr.System().matchFamilyStyle('sans-serif', ...)`
+  - **แก้รูปมืดด้วย Skia ColorMatrix** (คูณ RGB 1.3x) แทน `takePhoto` → เลี่ยงปัญหา map พิกัดกรอบ
 - [ ] **ย้าย token Telegram ไป backend** (เฟส 2) — ตอนนี้ฝังในแอป ถ้าแจก APK ให้คนอื่น token หลุด. ทำ relay บน GCP Cloud Run (Python LINE/Telegram SDK) + อาจรองรับ LINE OA ด้วย
 - [ ] ทำเป็นไฟล์ APK (ตอนนี้รันผ่าน USB/Metro)
 - [ ] ลด false positive (หมวกแดงโดนเดาเป็น Safety-Cone บางเฟรม)

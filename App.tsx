@@ -13,6 +13,7 @@ import { InferenceSession, Tensor } from 'onnxruntime-react-native';
 import RNFS from 'react-native-fs';
 import { TELEGRAM_TOKEN, TELEGRAM_CHAT_ID } from './telegram.config';
 import Geolocation from 'react-native-geolocation-service';
+import { Skia, PaintStyle, ImageFormat, FontStyle } from '@shopify/react-native-skia';
 
 const INPUT_SIZE = 640;
 const CONFIDENCE_THRESHOLD = 0.35;
@@ -241,16 +242,96 @@ export default function App() {
     }
   }, []);
 
-  // save เฟรม → ส่งเข้า Telegram
+  // save เฟรม → Skia วาดกรอบ + เพิ่มความสว่าง (offscreen ไม่ freeze) → ส่ง Telegram
   const captureAndSend = useCallback(
-    async (image: any, _dets: Detection[], caption: string) => {
+    async (image: any, dets: Detection[], caption: string) => {
       if (capturing.current) return; // กำลังส่งอยู่ ข้ามไปก่อน
       capturing.current = true;
+      const rawPath: string = await image.saveToTemporaryFileAsync('jpg', 90);
       try {
-        const path: string = await image.saveToTemporaryFileAsync('jpg', 80);
-        await sendTelegramPhoto(path, caption); // ส่งรูปดิบ (กรอบไว้ทำด้วย Skia ทีหลัง)
+        const uri = rawPath.startsWith('file://') ? rawPath : `file://${rawPath}`;
+        const data = await Skia.Data.fromURI(uri);
+        const skImg = Skia.Image.MakeImageFromEncoded(data);
+        if (!skImg) throw new Error('decode failed');
+        const iw = skImg.width();
+        const ih = skImg.height();
+
+        const RS = 2; // render scale (ความคมของรูปที่ส่ง)
+        const W = Math.round(SCREEN_W * RS);
+        const H = Math.round(SCREEN_H * RS);
+        const surface = Skia.Surface.MakeOffscreen(W, H);
+        if (!surface) throw new Error('surface failed');
+        const canvas = surface.getCanvas();
+
+        // วาดภาพแบบ cover (เต็มจอ ครอปกลาง) + brightness filter คูณ RGB
+        const b = 1.3;
+        const imgPaint = Skia.Paint();
+        imgPaint.setColorFilter(
+          Skia.ColorFilter.MakeMatrix([
+            b, 0, 0, 0, 0,
+            0, b, 0, 0, 0,
+            0, 0, b, 0, 0,
+            0, 0, 0, 1, 0,
+          ]),
+        );
+        const scale = Math.max(W / iw, H / ih);
+        const dw = iw * scale;
+        const dh = ih * scale;
+        canvas.drawImageRect(
+          skImg,
+          Skia.XYWHRect(0, 0, iw, ih),
+          Skia.XYWHRect((W - dw) / 2, (H - dh) / 2, dw, dh),
+          imgPaint,
+        );
+
+        // font แบบ best-effort (ถ้าสร้างไม่ได้ก็ข้าม label ไม่ทำให้กรอบหาย)
+        let font: any = null;
+        try {
+          const fm = Skia.FontMgr.System();
+          const tf =
+            fm.matchFamilyStyle('sans-serif', FontStyle.Normal) ||
+            fm.matchFamilyStyle('', FontStyle.Normal);
+          if (tf) font = Skia.Font(tf, 18 * RS);
+        } catch (fe) {
+          console.log('[ALERT] font สร้างไม่ได้:', fe);
+        }
+
+        // วาดกรอบ (เสมอ) + label (ถ้ามี font)
+        for (const det of dets) {
+          const color = Skia.Color(getBoxColor(det.label));
+          const x = det.x1 * RS;
+          const y = det.y1 * RS;
+          const p = Skia.Paint();
+          p.setStyle(PaintStyle.Stroke);
+          p.setStrokeWidth(Math.max(3, RS * 2));
+          p.setColor(color);
+          canvas.drawRect(
+            Skia.XYWHRect(x, y, (det.x2 - det.x1) * RS, (det.y2 - det.y1) * RS),
+            p,
+          );
+          if (font) {
+            try {
+              const label = `${det.label} ${det.confidence.toFixed(2)}`;
+              const th = 24 * RS;
+              const bg = Skia.Paint();
+              bg.setColor(Skia.Color('rgba(0,0,0,0.55)'));
+              canvas.drawRect(Skia.XYWHRect(x, y - th, label.length * 11 * RS, th), bg);
+              const tp = Skia.Paint();
+              tp.setColor(color);
+              canvas.drawText(label, x + 3 * RS, y - 6 * RS, tp, font);
+            } catch (te) {
+              console.log('[ALERT] วาด label ไม่ได้:', te);
+            }
+          }
+        }
+
+        const base64 = surface.makeImageSnapshot().encodeToBase64(ImageFormat.JPEG, 90);
+        const outPath = `${RNFS.CachesDirectoryPath}/alert_boxed.jpg`;
+        await RNFS.writeFile(outPath, base64, 'base64');
+        await sendTelegramPhoto(outPath, caption);
       } catch (e) {
-        console.error('alert send failed:', e);
+        console.error('skia draw failed, ส่งรูปดิบแทน:', e);
+        await sendTelegramPhoto(rawPath, caption); // fallback กัน alert หาย
       } finally {
         capturing.current = false;
       }
